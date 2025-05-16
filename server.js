@@ -1,6 +1,7 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
+const { json } = require('stream/consumers');
 
 const app = express();
 const server = http.createServer(app);
@@ -46,6 +47,7 @@ function initBlocks() {
 }
 
 function startGameLoop() {
+  let stateChanged = false;
   setInterval(() => {
     if (connectedPlayers > 0) {
       gameState.ball.x += gameState.ball.dx;
@@ -54,6 +56,8 @@ function startGameLoop() {
       // Wall collisions (top/bottom)
       if (gameState.ball.y < 0 || gameState.ball.y > 600) {
         gameState.ball.dy *= -1;
+        stateChanged = true;
+        // console.log("first change")
       }
 
       // Paddle collisions
@@ -61,12 +65,16 @@ function startGameLoop() {
           gameState.ball.y > gameState.paddles.left.y &&
           gameState.ball.y < gameState.paddles.left.y + 100) {
         gameState.ball.dx = Math.abs(gameState.ball.dx);
+        stateChanged = true;
+        // console.log("second change")
       }
 
       if (gameState.ball.x + gameState.ball.radius > 800 - 20 &&
           gameState.ball.y > gameState.paddles.right.y &&
           gameState.ball.y < gameState.paddles.right.y + 100) {
         gameState.ball.dx = -Math.abs(gameState.ball.dx);
+        stateChanged = true;
+        // console.log("third change")
       }
 
       // Block collisions
@@ -78,6 +86,8 @@ function startGameLoop() {
               gameState.ball.y - gameState.ball.radius < block.y + BLOCK_HEIGHT) {
             
             block.active = false;
+            stateChanged = true;
+            // console.log("fourth change")
             
             // Update scores based on block color
             if (block.color === 'red') {
@@ -124,7 +134,9 @@ function startGameLoop() {
       }
     }
 
-    io.emit('gameState', gameState);
+    if (stateChanged) {
+      io.emit('gameState', gameState);
+    }
   }, 1000 / FPS);
 }
 
@@ -144,13 +156,27 @@ io.on('connection', (socket) => {
 
   socket.emit('gameState', gameState);
   
+  socket.onAny((data) => {
+    console.log(data)
+    // const jsonObj = JSON.parse(data.JSON);
+    // console.log(jsonObj)
+  });
+
   socket.on('paddleMove', (data) => {
-    if (data.side === 'left') {
-      gameState.paddles.left.y = Math.max(0, Math.min(500, data.y));
+    console.log(data)
+    try {
+      // data = JSON.parse(data)
+      
+      if (data.side == 'left') {
+        gameState.paddles.left.y = Math.max(0, Math.min(500, data.y));
+      }
+      if (data.side == 'right') {
+        gameState.paddles.right.y = Math.max(0, Math.min(500, data.y));
+      }
+    } catch (error) {
+      console.error();
     }
-    if (data.side === 'right') {
-      gameState.paddles.right.y = Math.max(0, Math.min(500, data.y));
-    }
+    
   });
 
   socket.on('disconnect', () => {
