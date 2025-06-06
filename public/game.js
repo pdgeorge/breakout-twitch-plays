@@ -54,6 +54,13 @@ window.addEventListener('keydown', (e) => {
       e.preventDefault();
       break;
 
+    case 'b':
+    case 'B':
+      console.log('[key] "B" pressed – sending ballReset');
+      socket.emit('ballReset', 'ballReset');
+      e.preventDefault();
+      break;
+
     case 'k':
     case 'K':
       autoTrack = !autoTrack;

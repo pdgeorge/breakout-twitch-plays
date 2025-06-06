@@ -26,9 +26,9 @@ import socketio
 # ────────────────────────────────────────────────────────────────
 # Game / environment constants
 # ────────────────────────────────────────────────────────────────
-SCREEN_HEIGHT = 600          # canvas height in pixels
-MAX_BALL_SPEED_Y = 8         # absolute |dy| the server ever sends
+SCREEN_HEIGHT = 500          # canvas height in pixels
 MAX_PADDLE_SPEED = 8         # pixels we move paddle per action
+PADDLE_OFFSET = 50           # Half of the paddle length
 
 # ────────────────────────────────────────────────────────────────
 # Reinforcement‑learning hyper‑parameters
@@ -43,8 +43,6 @@ BATCH_SIZE = 64
 MEMORY_CAP = 5_000
 TARGET_SYNC = 1_000          # gradient steps between policy → target copies
 
-PADDLE_OFFSET = 50
-
 # ────────────────────────────────────────────────────────────────
 # Checkpoint path
 # ────────────────────────────────────────────────────────────────
@@ -58,17 +56,19 @@ def extract_state(packet: dict) -> torch.Tensor:
     """Return a (3,) float32 tensor scaled to roughly ±1."""
     paddle_y = packet["paddles"]["left"]["y"]
     ball = packet["ball"]
-    rel_y = (ball["y"] - paddle_y) / (SCREEN_HEIGHT / 2)   # –1 … 1
-    dy = ball["dy"] / MAX_BALL_SPEED_Y                     # –1 … 1
+    rel_y = (ball["y"] - (paddle_y + PADDLE_OFFSET)) / (SCREEN_HEIGHT / 2)
+    dy = ball["dy"]
+    ball_x = ball["x"]
+    ball_dx = ball["dx"]
     coming = 1.0 if ball["dx"] < 0 else 0.0
-    return torch.tensor([rel_y, dy, coming], dtype=torch.float32)
+    return torch.tensor([rel_y, dy, ball_x, ball_dx], dtype=torch.float32)
 
 # ────────────────────────────────────────────────────────────────
 # DQN model
 # ────────────────────────────────────────────────────────────────
 
 class DQN(nn.Module):
-    def __init__(self, in_dim: int = 3, hidden: int = 64, out_dim: int = 3):
+    def __init__(self, in_dim: int = 4, hidden: int = 64, out_dim: int = 4):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(in_dim, hidden), nn.ReLU(),
@@ -120,6 +120,7 @@ target_net = DQN().to(device)
 target_net.load_state_dict(policy_net.state_dict())
 target_net.eval()
 punish_flag = False
+reward_flag = False
 
 optimizer = optim.Adam(policy_net.parameters(), lr=ALPHA)
 
@@ -153,14 +154,20 @@ prev_left_score = 0
 # ────────────────────────────────────────────────────────────────
 
 @sio.event
+async def rewardHit(data):
+    global reward_flag
+    print("Rewarded for hit")
+    reward_flag = True
+
+@sio.event
 async def punish(data):
     global punish_flag
-    print("Punished")
+    print("Punished for miss")
     punish_flag = True
 
 @sio.event
 async def gameState(data):
-    global prev_state, prev_action, prev_left_score, epsilon, step_count, punish_flag
+    global prev_state, prev_action, prev_left_score, epsilon, step_count, punish_flag, reward_flag
 
     state = extract_state(data).to(device)
     left_score = data["paddles"]["left"]["score"]
@@ -170,12 +177,19 @@ async def gameState(data):
         paddle_y = data["paddles"]["left"]["y"]
         ball_y = data["ball"]["y"]
         ball_x = data["ball"]["x"]
-        reward = (1 / abs((paddle_y + PADDLE_OFFSET) - ball_y)) * 500 + -10000 * punish_flag
+        paddle_lower = paddle_y + PADDLE_OFFSET * 2
+        reward = 0
+        if paddle_y <= ball_y <= paddle_lower:
+            reward = 1
+        else:
+            reward = 1 / abs(paddle_y + PADDLE_OFFSET - ball_y) - 1
+        reward += 100 * punish_flag + 10 * reward_flag
         print(f"{reward=}")
         to_send = {"reward": reward}
         await sio.emit("reward", to_send)
         replay.append((prev_state, prev_action, reward, state))
         punish_flag = False
+        reward_flag = False
 
     # 2️⃣  ε‑greedy policy
     if random.random() < epsilon:
